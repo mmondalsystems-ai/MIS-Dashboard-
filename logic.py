@@ -6,20 +6,29 @@ from jsutil import s, parse_float, parse_int, to_fixed
 from weeks import (clean_week_label, normalize_week_label, parse_week_start,
                    parse_week_range, week_label_current, week_block_starts, MON3)
 
+DEFAULT_ADMINS = {
+    "SYSTEM TEAM": {"password": "@2003", "displayName": "System Team", "departmentFilter": True},
+    "ADMIN2": {"password": "1234", "displayName": "Admin2", "departmentFilter": False},
+    "ADMIN3": {"password": "1234", "displayName": "Admin3", "departmentFilter": False},
+    "ADMIN4": {"password": "1234", "displayName": "Admin4", "departmentFilter": False},
+}
+
+
 def _load_admins():
-    """Admin accounts come from the ADMIN_USERS environment variable (JSON), never from the code.
-    Example: {"SYSTEM TEAM": {"password": "...", "displayName": "System Team", "departmentFilter": true},
-              "ADMIN2": {"password": "...", "displayName": "Admin2", "departmentFilter": false}}"""
+    """Admin accounts. If the ADMIN_USERS environment variable (JSON) is set and valid,
+    it overrides the defaults above; otherwise DEFAULT_ADMINS is used."""
     import json
     import os
     raw = os.environ.get("ADMIN_USERS", "").strip()
-    if not raw:
-        return {}
-    try:
-        data = json.loads(raw)
-    except ValueError:
-        return {}
-    return {norm_name(k): v for k, v in data.items() if isinstance(v, dict)}
+    if raw:
+        try:
+            data = json.loads(raw)
+            admins = {norm_name(k): v for k, v in data.items() if isinstance(v, dict)}
+            if admins:
+                return admins
+        except ValueError:
+            pass
+    return {norm_name(k): v for k, v in DEFAULT_ADMINS.items()}
 
 
 MAX_WEEKS_IN_FILTER = 6
