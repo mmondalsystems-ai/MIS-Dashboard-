@@ -6,12 +6,22 @@ from jsutil import s, parse_float, parse_int, to_fixed
 from weeks import (clean_week_label, normalize_week_label, parse_week_start,
                    parse_week_range, week_label_current, week_block_starts, MON3)
 
-ADMINS = {
-    "SYSTEM TEAM": {"password": "@2003", "displayName": "System Team", "departmentFilter": True},
-    "ADMIN2": {"password": "1234", "displayName": "Admin2", "departmentFilter": False},
-    "ADMIN3": {"password": "1234", "displayName": "Admin3", "departmentFilter": False},
-    "ADMIN4": {"password": "1234", "displayName": "Admin4", "departmentFilter": False},
-}
+def _load_admins():
+    """Admin accounts come from the ADMIN_USERS environment variable (JSON), never from the code.
+    Example: {"SYSTEM TEAM": {"password": "...", "displayName": "System Team", "departmentFilter": true},
+              "ADMIN2": {"password": "...", "displayName": "Admin2", "departmentFilter": false}}"""
+    import json
+    import os
+    raw = os.environ.get("ADMIN_USERS", "").strip()
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return {}
+    return {norm_name(k): v for k, v in data.items() if isinstance(v, dict)}
+
+
 MAX_WEEKS_IN_FILTER = 6
 SKIP_NAMES = {"NAME", "DEPARTMENT", "TASK", "TOTAL SCORE"}
 
@@ -48,11 +58,13 @@ def cell(values, r, c):
 
 def validateLogin(username, password):
     u = norm_name(username)
-    if u in ADMINS:
-        a = ADMINS[u]
-        if str(password or "") == a["password"]:
-            return {"success": True, "role": "admin", "displayName": a["displayName"],
-                    "departmentFilter": bool(a["departmentFilter"])}
+    admins = _load_admins()
+    if u in admins:
+        a = admins[u]
+        if str(password or "") == str(a.get("password", "")):
+            return {"success": True, "role": "admin",
+                    "displayName": a.get("displayName") or username,
+                    "departmentFilter": bool(a.get("departmentFilter"))}
         return {"success": False, "message": "Wrong password!"}
 
     with pool().connection() as conn:
@@ -1285,11 +1297,49 @@ def getMonthlyTeamScoreData(selectedWeek):
     }
 
 
+def monthly_sheet_time_value(value):
+    raw = s(value).strip()
+    return "" if raw in ("-", "\u2014") else raw
+
+
 def generateMonthlyTeamScoreSheet(selectedWeek):
-    # The Google Sheet output ("Monthly Score" tab) cannot be written from this server;
-    # the dashboard still receives the full monthly data.
+    """Returns the monthly team data and writes the "Monthly Score" tab of the
+    Google Sheet through the Apps Script receiver (monthly_score_receiver.gs)."""
+    import json
+    import os
+    import urllib.request
+
     res = getMonthlyTeamScoreData(selectedWeek)
-    res["sheetUpdated"] = False
+    url = os.environ.get("SHEET_WEBAPP_URL", "").strip()
+    token = os.environ.get("SHEET_WEBAPP_TOKEN", "").strip()
+    if not url or not token:
+        res["sheetUpdated"] = False
+        res["sheetError"] = "SHEET_WEBAPP_URL / SHEET_WEBAPP_TOKEN are not set."
+        return res
+
+    values = [["Employee", "Quantity Score", "Time Score", "Score Month"]]
+    for row in res.get("rows") or []:
+        values.append([row.get("name") or "", row.get("monthlyQuantity") or "0",
+                       monthly_sheet_time_value(row.get("monthlyTime")),
+                       res.get("monthLabel") or "Selected Month"])
+    if len(values) == 1:
+        values.append(["No monthly score data found.", "", "", ""])
+
+    try:
+        req = urllib.request.Request(
+            url, data=json.dumps({"token": token, "values": values}).encode("utf-8"),
+            headers={"Content-Type": "text/plain;charset=utf-8"}, method="POST")
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            reply = json.loads(resp.read().decode("utf-8"))
+        if reply.get("success"):
+            res["sheetName"] = reply.get("sheetName") or "Monthly Score"
+            res["sheetUpdated"] = True
+        else:
+            res["sheetUpdated"] = False
+            res["sheetError"] = reply.get("message") or "Sheet was not updated."
+    except Exception as e:
+        res["sheetUpdated"] = False
+        res["sheetError"] = str(e)
     return res
 
 
