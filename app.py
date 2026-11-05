@@ -11,7 +11,11 @@ app = FastAPI()
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # On Vercel the files in public/ are served by the CDN. This mount makes the same
 # URL (/static/shim.js) work when you run the app locally with uvicorn.
-app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "public", "static")), name="static")
+# On Vercel, public/ is served by the CDN and is not part of the function bundle, so the
+# folder may not exist there. Mount it only when it exists (local runs).
+STATIC_DIR = os.path.join(BASE_DIR, "public", "static")
+if os.path.isdir(STATIC_DIR):
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # Every function the page calls through google.script.run.
 EXPOSED = [
