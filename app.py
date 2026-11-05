@@ -8,7 +8,10 @@ from fastapi.staticfiles import StaticFiles
 import logic
 
 app = FastAPI()
-app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# On Vercel the files in public/ are served by the CDN. This mount makes the same
+# URL (/static/shim.js) work when you run the app locally with uvicorn.
+app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "public", "static")), name="static")
 
 # Every function the page calls through google.script.run.
 EXPOSED = [
@@ -25,7 +28,7 @@ FUNCS = {name: getattr(logic, name) for name in EXPOSED}
 
 @app.get("/", response_class=HTMLResponse)
 def home():
-    path = os.path.join(os.path.dirname(__file__), "templates", "index.html")
+    path = os.path.join(BASE_DIR, "templates", "index.html")
     with open(path, encoding="utf-8") as f:
         return f.read()
 

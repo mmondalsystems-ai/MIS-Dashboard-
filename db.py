@@ -19,7 +19,7 @@ def pool():
     global _pool
     if _pool is None:
         _pool = ConnectionPool(
-            os.environ["DATABASE_URL"], min_size=1, max_size=8,
+            os.environ["DATABASE_URL"], min_size=1, max_size=int(os.environ.get("DB_POOL_MAX", "3")),
             kwargs={"row_factory": dict_row, "prepare_threshold": None},
             open=True,
         )
