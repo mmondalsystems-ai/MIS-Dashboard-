@@ -977,7 +977,7 @@ def dept_of_employee_map(directory):
     return dept_of, order
 
 
-def getHoDepartmentWiseWeeklyScoreSummary(selectedWeek):
+def getHoDepartmentWiseWeeklyScoreSummary(selectedWeek, printGroup=None, departmentKey=None):
     base = getWeeklyScoreSummary(selectedWeek, "HO", "ALL")
     if not base or base.get("success") is False:
         return base
