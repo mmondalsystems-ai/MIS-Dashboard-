@@ -2934,9 +2934,10 @@ function loadLoginUsernames() {
   google.script.run
     .withSuccessHandler(function(users) {
       sel.innerHTML = '<option value="">Select username</option>';
-      ['System Team','Admin1','Admin2','Admin3','Admin4','Admin5'].forEach(function(a) {
+      [['SYSTEM TEAM','System Team'],['ADMIN1','Purchase Team'],['ADMIN2','Accounts Team'],
+       ['ADMIN3','Sales Team'],['ADMIN4','Site Team'],['ADMIN5','Project Team']].forEach(function(a) {
         var o = document.createElement('option');
-        o.value = a.toUpperCase(); o.textContent = a;
+        o.value = a[0]; o.textContent = a[1];
         sel.appendChild(o);
       });
       (users||[]).forEach(function(u) {
