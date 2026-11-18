@@ -22,13 +22,16 @@ DEPT_ADMIN_SCOPE = {
     "ADMIN2": ("Accounts", "Accounts Team"),
     "ADMIN3": ("Sales", "Sales Team"),
     "ADMIN4": ("Site", "Site Team"),
-    "ADMIN5": ("Project", "Project Team"),
+    "ADMIN5": ("IPD", "IPD"),
+    "ADMIN6": ("HR&Admin", "HR&Admin"),
 }
 
 # Extra department names tried (in order) when the main name is not found in the Department sheet.
 # "Site" also tries "Amritaya" because SITE 1 / SITE 2 are merged into Amritaya in the directory.
+# Keys are compact department names (see _dept_base).
 DEPT_ALIASES = {
     "SITE": ["SITE", "AMRITAYA"],
+    "HRADMIN": ["HRADMIN", "HR"],
 }
 
 
@@ -56,11 +59,16 @@ def _load_admins():
 
 
 def _dept_base(name):
-    n = norm_name(name)
+    """Compact comparison form of a department name: upper case, no ' TEAM' / ' DEPARTMENT'
+    suffix, ' AND ' treated as '&', and only letters and digits kept
+    (e.g. "HR & Admin", "HR and Admin" and "HR&Admin" all become "HRADMIN")."""
+    n = " " + norm_name(name) + " "
+    n = n.replace(" AND ", " & ")
+    n = n.strip()
     for suffix in (" TEAM", " DEPARTMENT", " DEPT"):
         if n.endswith(suffix):
             n = n[: -len(suffix)].strip()
-    return n
+    return re.sub(r"[^A-Z0-9]", "", n)
 
 
 def resolve_scope_department(scope_name):
@@ -128,6 +136,9 @@ def validateLogin(username, password):
                       "displayName": a.get("displayName") or username,
                       "departmentFilter": bool(a.get("departmentFilter"))}
             scope = s(a.get("department")).strip()
+            # The Post Sales Followup Score section is shown to the System Team and the Sales Team only.
+            result["followup"] = bool(a.get("followup")) or (not scope and bool(a.get("departmentFilter"))) \
+                or _dept_base(scope) == "SALES"
             if scope:
                 dept = resolve_scope_department(scope)
                 if not dept:

@@ -2935,7 +2935,7 @@ function loadLoginUsernames() {
     .withSuccessHandler(function(users) {
       sel.innerHTML = '<option value="">Select username</option>';
       [['SYSTEM TEAM','System Team'],['ADMIN1','Purchase Team'],['ADMIN2','Accounts Team'],
-       ['ADMIN3','Sales Team'],['ADMIN4','Site Team'],['ADMIN5','Project Team']].forEach(function(a) {
+       ['ADMIN3','Sales Team'],['ADMIN4','Site Team'],['ADMIN5','IPD'],['ADMIN6','HR&Admin']].forEach(function(a) {
         var o = document.createElement('option');
         o.value = a[0]; o.textContent = a[1];
         sel.appendChild(o);
@@ -2972,7 +2972,7 @@ function doLogin() {
   google.script.run
     .withSuccessHandler(function(res) {
       btn.disabled = false; btn.textContent = 'Sign In →';
-      if (res.success) { currentUser = { name:res.displayName, role:res.role, departmentFilter:!!res.departmentFilter, scopeKey:res.scopeKey || '', scopeLabel:res.scopeLabel || '' }; setTimeout(onLoginSuccess, 300); }
+      if (res.success) { currentUser = { name:res.displayName, role:res.role, departmentFilter:!!res.departmentFilter, scopeKey:res.scopeKey || '', scopeLabel:res.scopeLabel || '', followup:!!res.followup }; setTimeout(onLoginSuccess, 300); }
       else showLoginError(res.message||'Login failed!');
     })
     .withFailureHandler(function(err) {
@@ -3712,7 +3712,7 @@ function doChangePwd() {
   if (!user||!current||!newPwd||!confirm) { errEl.textContent='All fields Mandatory!'; errEl.classList.add('show'); return; }
   if (newPwd!==confirm) { errEl.textContent='Passwords Does not Match!'; errEl.classList.add('show'); return; }
   if (newPwd.length<4)  { errEl.textContent='Minimum 4 characters!'; errEl.classList.add('show'); return; }
-  if (['SYSTEM TEAM','ADMIN1','ADMIN2','ADMIN3','ADMIN4','ADMIN5'].includes(user.toUpperCase())) {
+  if (['SYSTEM TEAM','ADMIN1','ADMIN2','ADMIN3','ADMIN4','ADMIN5','ADMIN6'].includes(user.toUpperCase())) {
     errEl.textContent='Admin password Can not Change!'; errEl.classList.add('show'); return;
   }
   google.script.run
@@ -5727,10 +5727,10 @@ function psfIsOwnEligibleUser_() {
   return !!(currentUser && currentUser.role === "user" && psfIsEligible_(currentUser.name));
 }
 
-// Any admin (System Team, Admin2/3/4). To limit to System Team only use:
-//   return !!(currentUser && currentUser.role === "admin" && currentUser.departmentFilter);
+// Followup Score is shown only to the System Team and the Sales Team admin
+// (the server sets "followup" on login).
 function psfIsAdminUser_() {
-  return !!(currentUser && currentUser.role === "admin");
+  return !!(currentUser && currentUser.role === "admin" && currentUser.followup);
 }
 
 function psfToTitle_(s) {
