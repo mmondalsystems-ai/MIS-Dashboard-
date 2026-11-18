@@ -6,29 +6,82 @@ from jsutil import s, parse_float, parse_int, to_fixed
 from weeks import (clean_week_label, normalize_week_label, parse_week_start,
                    parse_week_range, week_label_current, week_block_starts, MON3)
 
+# Super admin fallback only. Department admins (ADMIN1..ADMIN5) have NO password in code:
+# their passwords come from the ADMIN_USERS environment variable (JSON), e.g.
+# {"SYSTEM TEAM": {"password": "...", "displayName": "System Team", "departmentFilter": true},
+#  "ADMIN1": {"password": "..."}, "ADMIN2": {"password": "..."}, ...}
 DEFAULT_ADMINS = {
     "SYSTEM TEAM": {"password": "@2003", "displayName": "System Team", "departmentFilter": True},
-    "ADMIN2": {"password": "1234", "displayName": "Admin2", "departmentFilter": False},
-    "ADMIN3": {"password": "1234", "displayName": "Admin3", "departmentFilter": False},
-    "ADMIN4": {"password": "1234", "displayName": "Admin4", "departmentFilter": False},
+}
+
+# Department admins: username -> (department name to look up in the Department sheet, label shown after login).
+# A department admin only sees that department and the employees listed under it.
+# An entry in ADMIN_USERS may override this with its own "department" / "displayName".
+DEPT_ADMIN_SCOPE = {
+    "ADMIN1": ("Purchase", "Purchase Team"),
+    "ADMIN2": ("Accounts", "Accounts Team"),
+    "ADMIN3": ("Sales", "Sales Team"),
+    "ADMIN4": ("Site", "Site Team"),
+    "ADMIN5": ("Project", "Project Team"),
+}
+
+# Extra department names tried (in order) when the main name is not found in the Department sheet.
+# "Site" also tries "Amritaya" because SITE 1 / SITE 2 are merged into Amritaya in the directory.
+DEPT_ALIASES = {
+    "SITE": ["SITE", "AMRITAYA"],
 }
 
 
 def _load_admins():
-    """Admin accounts. If the ADMIN_USERS environment variable (JSON) is set and valid,
-    it overrides the defaults above; otherwise DEFAULT_ADMINS is used."""
+    """Admin accounts: DEFAULT_ADMINS (super admin) merged with the ADMIN_USERS environment
+    variable (JSON). Entries from ADMIN_USERS override the defaults."""
     import json
     import os
+    admins = {norm_name(k): dict(v) for k, v in DEFAULT_ADMINS.items()}
     raw = os.environ.get("ADMIN_USERS", "").strip()
     if raw:
         try:
             data = json.loads(raw)
-            admins = {norm_name(k): v for k, v in data.items() if isinstance(v, dict)}
-            if admins:
-                return admins
+            for k, v in data.items():
+                if isinstance(v, dict):
+                    admins[norm_name(k)] = dict(v)
         except ValueError:
             pass
-    return {norm_name(k): v for k, v in DEFAULT_ADMINS.items()}
+    for key, a in admins.items():
+        if key in DEPT_ADMIN_SCOPE:
+            dept, label = DEPT_ADMIN_SCOPE[key]
+            a.setdefault("department", dept)
+            a.setdefault("displayName", label)
+    return admins
+
+
+def _dept_base(name):
+    n = norm_name(name)
+    for suffix in (" TEAM", " DEPARTMENT", " DEPT"):
+        if n.endswith(suffix):
+            n = n[: -len(suffix)].strip()
+    return n
+
+
+def resolve_scope_department(scope_name):
+    """Find the Department-sheet department that matches a department admin's scope.
+    Returns {"key": ..., "name": ...} or None."""
+    directory = getDepartmentDirectory()
+    if not directory or directory.get("success") is False:
+        return None
+    wanted = _dept_base(scope_name)
+    candidates = DEPT_ALIASES.get(wanted, [wanted])
+    depts = directory.get("departments") or []
+    for cand in candidates:
+        cand = _dept_base(cand)
+        for d in depts:                       # exact match
+            if _dept_base(d["key"]) == cand:
+                return {"key": d["key"], "name": d["name"]}
+        for d in depts:                       # singular / plural or partial match
+            base = _dept_base(d["key"])
+            if base and (base.startswith(cand) or cand.startswith(base)):
+                return {"key": d["key"], "name": d["name"]}
+    return None
 
 
 MAX_WEEKS_IN_FILTER = 6
@@ -70,10 +123,21 @@ def validateLogin(username, password):
     admins = _load_admins()
     if u in admins:
         a = admins[u]
-        if str(password or "") == str(a.get("password", "")):
-            return {"success": True, "role": "admin",
-                    "displayName": a.get("displayName") or username,
-                    "departmentFilter": bool(a.get("departmentFilter"))}
+        if str(a.get("password", "")) != "" and str(password or "") == str(a.get("password", "")):
+            result = {"success": True, "role": "admin",
+                      "displayName": a.get("displayName") or username,
+                      "departmentFilter": bool(a.get("departmentFilter"))}
+            scope = s(a.get("department")).strip()
+            if scope:
+                dept = resolve_scope_department(scope)
+                if not dept:
+                    return {"success": False,
+                            "message": "Department '" + scope + "' was not found in the Department sheet. "
+                                       "Please contact the System Team."}
+                result["departmentFilter"] = True
+                result["scopeKey"] = dept["key"]
+                result["scopeLabel"] = dept["name"]
+            return result
         return {"success": False, "message": "Wrong password!"}
 
     with pool().connection() as conn:
