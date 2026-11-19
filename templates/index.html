@@ -879,6 +879,22 @@ body {
 
 
 
+/* DEPARTMENT MONTHLY + CARRY-FORWARD VIEW */
+.dmb-toolbar { display:flex; align-items:center; gap:10px; margin-bottom:14px; flex-wrap:wrap; }
+.dmb-toolbar select { padding:8px 10px; border:1px solid #D6E2F0; border-radius:8px; font-size:12px; }
+.dmb-note { font-size:11px; color:#718096; margin-bottom:12px; line-height:1.5; }
+.dmb-row { cursor:pointer; }
+.dmb-row:hover td { background:#F0F7FF !important; }
+.dmb-num { text-align:center; font-weight:800; }
+.dmb-num.warn { color:var(--red); }
+.dmb-detail td { background:#FAFCFF !important; padding:10px 16px 14px 28px; }
+.dmb-task { margin-bottom:8px; font-size:12px; }
+.dmb-task b { color:#17365D; }
+.dmb-dates { color:#4A5568; margin-top:2px; line-height:1.6; }
+.dmb-tag { display:inline-block; font-size:9px; font-weight:800; letter-spacing:.5px; text-transform:uppercase;
+  padding:1px 6px; border-radius:6px; margin-right:6px; background:#FDECEC; color:var(--red); }
+.dmb-tag.cur { background:#EAF3FF; color:#17365D; }
+
 /* ADMIN MONTHLY TEAM VIEW */
 .monthly-modal-card.team-view {
   width:min(1180px,98vw);
@@ -3641,7 +3657,7 @@ function onLoginSuccess() {
   // Monthly Score button: admin / System Team only
   var monthlyBtn = document.getElementById('monthlyBtnTopbar');
   if (monthlyBtn) {
-    monthlyBtn.classList.toggle('show', currentUser.role === 'admin' && !currentUser.scopeKey);
+    monthlyBtn.classList.toggle('show', currentUser.role === 'admin');
   }
 
   // Load the latest 5 stored weeks first. Current week is selected by default when available.
@@ -3824,6 +3840,12 @@ var lastMonthlyTeamData = null;
 function openMonthlyScore() {
   if (!currentUser || currentUser.role !== 'admin') {
     alert('Monthly Score is available for admin only.');
+    return;
+  }
+
+  // Department admins: monthly score + carry-forward pending (own department only)
+  if (currentUser.scopeKey) {
+    openDeptMonthlyBacklog_();
     return;
   }
 
@@ -4046,6 +4068,157 @@ function showMonthlyError(err) {
     '<div class="monthly-empty" style="color:var(--red)">Error: '
     + escapeHtml((err && err.message) || err)
     + '</div>';
+}
+
+// ------------------------------------------------------------
+// DEPARTMENT ADMIN: MONTHLY SCORE + CARRY-FORWARD PENDING
+// (own department only; does not touch the weekly / system views)
+// ------------------------------------------------------------
+var dmbPeriods_ = [];
+var dmbSeq_ = 0;
+
+function openDeptMonthlyBacklog_() {
+  var card = document.querySelector('#monthlyModal .monthly-modal-card');
+  if (card) card.classList.add('team-view');
+
+  document.getElementById('monthlyModal').classList.add('show');
+  document.getElementById('monthlyModalTitle').textContent =
+    'Monthly Score — ' + (currentUser.scopeLabel || 'Department');
+  document.getElementById('monthlyModalSub').textContent =
+    'Monthly score with pending work carried forward from earlier months';
+  document.getElementById('monthlyModalBody').innerHTML =
+    '<div class="monthly-loading"><div class="spinner"></div> Loading months...</div>';
+
+  google.script.run
+    .withSuccessHandler(function(res) {
+      dmbPeriods_ = (res && res.periods) || [];
+      if (!dmbPeriods_.length) {
+        document.getElementById('monthlyModalBody').innerHTML =
+          '<div class="monthly-empty">No monthly data found yet.</div>';
+        return;
+      }
+      loadDeptMonthlyBacklog_(res.defaultPeriod || dmbPeriods_[0]);
+    })
+    .withFailureHandler(showMonthlyError)
+    .getMonthlyFmsPeriods();
+}
+
+function loadDeptMonthlyBacklog_(period) {
+  var seq = ++dmbSeq_;
+  document.getElementById('monthlyModalBody').innerHTML =
+    '<div class="monthly-loading"><div class="spinner"></div> Loading '
+    + escapeHtml(period) + '...</div>';
+
+  google.script.run
+    .withSuccessHandler(function(res) {
+      if (seq !== dmbSeq_) return;
+      renderDeptMonthlyBacklog_(res, period);
+    })
+    .withFailureHandler(function(err) {
+      if (seq !== dmbSeq_) return;
+      showMonthlyError(err);
+    })
+    .getDepartmentMonthlyBacklog(period, currentUser.scopeKey);
+}
+
+function toggleDmbDetail_(id) {
+  var el = document.getElementById(id);
+  if (el) el.style.display = el.style.display === 'none' ? '' : 'none';
+}
+
+function renderDeptMonthlyBacklog_(res, period) {
+  var body = document.getElementById('monthlyModalBody');
+
+  var options = dmbPeriods_.map(function(p) {
+    return '<option value="' + escapeHtml(p) + '"' + (p === period ? ' selected' : '') + '>'
+      + escapeHtml(p) + '</option>';
+  }).join('');
+
+  var html =
+    '<div class="dmb-toolbar"><b style="font-size:12px;color:#17365D">Month</b>'
+    + '<select onchange="loadDeptMonthlyBacklog_(this.value)">' + options + '</select></div>';
+
+  if (!res || res.success === false) {
+    body.innerHTML = html + '<div class="monthly-empty">'
+      + escapeHtml((res && res.message) || 'No data found.') + '</div>';
+    return;
+  }
+
+  var rows = res.rows || [];
+
+  html +=
+    '<div class="monthly-summary-row team-summary" style="grid-template-columns:repeat(5,minmax(0,1fr))">'
+    + '<div class="monthly-summary-card"><div class="monthly-summary-label">Employees</div>'
+    + '<div class="monthly-summary-value">' + rows.length + '</div></div>'
+    + '<div class="monthly-summary-card"><div class="monthly-summary-label">Avg Quantity</div>'
+    + '<div class="monthly-summary-value ' + scoreClass(res.averageFms) + '">'
+    + escapeHtml(res.averageFms || '—') + '</div></div>'
+    + '<div class="monthly-summary-card"><div class="monthly-summary-label">Carry-forward Pending</div>'
+    + '<div class="monthly-summary-value ' + (res.carryTotal ? 'red' : '') + '">' + res.carryTotal + '</div></div>'
+    + '<div class="monthly-summary-card"><div class="monthly-summary-label">This Month Pending</div>'
+    + '<div class="monthly-summary-value ' + (res.currentTotal ? 'red' : '') + '">' + res.currentTotal + '</div></div>'
+    + '<div class="monthly-summary-card"><div class="monthly-summary-label">Total Pending</div>'
+    + '<div class="monthly-summary-value ' + (res.pendingTotal ? 'red' : 'green') + '">' + res.pendingTotal + '</div></div>'
+    + '</div>';
+
+  html += '<div class="dmb-note">'
+    + 'Carry-forward = work planned before this month that is still not done today. '
+    + 'Work finished later drops out automatically. Click an employee to see the task-wise pending list.'
+    + (res.backlogAvailable === false
+        ? '<br/><span style="color:var(--red)">Pending Backlog data is not available yet — only the monthly score is shown.</span>'
+        : '')
+    + '</div>';
+
+  if (!rows.length) {
+    body.innerHTML = html + '<div class="monthly-empty">No employees found for this month.</div>';
+    return;
+  }
+
+  html += '<div class="monthly-table-wrap"><table class="monthly-table"><thead><tr>'
+    + '<th>Employee</th><th>Quantity</th><th>Time</th><th>Planned</th><th>Done</th>'
+    + '<th>Not Done (month)</th><th>Carry-forward</th><th>This Month</th><th>Total Pending</th>'
+    + '</tr></thead><tbody>';
+
+  rows.forEach(function(r, i) {
+    var id = 'dmbDetail' + i;
+    var hasTasks = r.tasks && r.tasks.length;
+    var carryMonths = Object.keys(r.carryByMonth || {}).sort().map(function(k) {
+      return k + ': ' + r.carryByMonth[k];
+    }).join(' · ');
+
+    html += '<tr class="dmb-row"' + (hasTasks ? ' onclick="toggleDmbDetail_(\'' + id + '\')"' : '') + '>'
+      + '<td><b>' + escapeHtml(toTitle(r.name)) + '</b></td>'
+      + '<td class="monthly-score ' + scoreClass(r.fmsScore) + '">' + escapeHtml(r.fmsScore || '—') + '</td>'
+      + '<td class="monthly-score ' + scoreClass(r.timeScore) + '">' + escapeHtml(r.timeScore || '—') + '</td>'
+      + '<td class="dmb-num">' + (r.planned || 0) + '</td>'
+      + '<td class="dmb-num">' + (r.done || 0) + '</td>'
+      + '<td class="dmb-num' + (r.notDone ? ' warn' : '') + '">' + (r.notDone || 0) + '</td>'
+      + '<td class="dmb-num' + (r.carryCount ? ' warn' : '') + '" title="' + escapeHtml(carryMonths) + '">' + r.carryCount + '</td>'
+      + '<td class="dmb-num' + (r.currentCount ? ' warn' : '') + '">' + r.currentCount + '</td>'
+      + '<td class="dmb-num' + (r.pendingTotal ? ' warn' : '') + '">' + r.pendingTotal + '</td>'
+      + '</tr>';
+
+    if (hasTasks) {
+      html += '<tr class="dmb-detail" id="' + id + '" style="display:none"><td colspan="9">'
+        + (carryMonths ? '<div class="dmb-task"><b>Carry-forward by month:</b> ' + escapeHtml(carryMonths) + '</div>' : '');
+      r.tasks.forEach(function(t) {
+        html += '<div class="dmb-task"><b>' + escapeHtml(t.task) + '</b>';
+        if (t.carry.length) {
+          html += '<div class="dmb-dates"><span class="dmb-tag">Carry-forward ' + t.carry.length + '</span>'
+            + t.carry.map(function(x) { return escapeHtml(x.detail); }).join(' &nbsp;|&nbsp; ') + '</div>';
+        }
+        if (t.current.length) {
+          html += '<div class="dmb-dates"><span class="dmb-tag cur">This month ' + t.current.length + '</span>'
+            + t.current.map(function(x) { return escapeHtml(x.detail); }).join(' &nbsp;|&nbsp; ') + '</div>';
+        }
+        html += '</div>';
+      });
+      html += '</td></tr>';
+    }
+  });
+
+  html += '</tbody></table></div>';
+  body.innerHTML = html;
 }
 
 function closeMonthlyScore() {

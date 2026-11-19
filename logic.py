@@ -6,6 +6,8 @@ from jsutil import s, parse_float, parse_int, to_fixed
 from weeks import (clean_week_label, normalize_week_label, parse_week_start,
                    parse_week_range, week_label_current, week_block_starts, MON3)
 
+MONTHS_MAP = {m.lower(): i for i, m in enumerate(MON3)}
+
 # Super admin fallback only. Department admins (ADMIN1..ADMIN5) have NO password in code:
 # their passwords come from the ADMIN_USERS environment variable (JSON), e.g.
 # {"SYSTEM TEAM": {"password": "...", "displayName": "System Team", "departmentFilter": true},
@@ -1512,4 +1514,123 @@ def getFollowupScoreData(employeeName, weekLabel):
             result["due"] = item
         else:
             result["expected"] = item
+    return result
+
+
+# ---------------- department monthly score + carry-forward backlog ----------------
+# Used only by the department admins' Monthly Score view. It reads the existing
+# monthly data (unchanged) plus the "Pending Backlog" table built by pending_backlog.gs.
+
+def parse_month_range(label):
+    text = re.sub(r"[\u2013\u2014]", "-", clean_week_label(label))
+    m = re.match(r"^(?:range\s*:\s*)?([A-Za-z]{3})\s+(\d{1,2}),\s*(\d{4})\s*-\s*"
+                 r"([A-Za-z]{3})\s+(\d{1,2}),\s*(\d{4})$", text, re.I)
+    if m:
+        sm, em = MONTHS_MAP.get(m.group(1).lower()), MONTHS_MAP.get(m.group(4).lower())
+        if sm is not None and em is not None:
+            try:
+                return (date(int(m.group(3)), sm + 1, int(m.group(2))),
+                        date(int(m.group(6)), em + 1, int(m.group(5))))
+            except ValueError:
+                return None
+    return parse_week_range(label)
+
+
+def parse_backlog_date(value):
+    m = re.match(r"^\s*(\d{1,2})/(\d{1,2})/(\d{4})\s*$", s(value))
+    if not m:
+        return None
+    try:
+        return date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+    except ValueError:
+        return None
+
+
+def getDepartmentMonthlyBacklog(periodLabel, departmentKey):
+    label = clean_week_label(periodLabel)
+    if not label:
+        label = getMonthlyFmsPeriods()["defaultPeriod"] or ""
+    result = {"success": True, "periodLabel": label, "departmentKey": s(departmentKey),
+              "departmentLabel": "", "rows": [], "backlogAvailable": True,
+              "carryTotal": 0, "currentTotal": 0, "pendingTotal": 0,
+              "averageFms": "", "averageTime": "", "message": ""}
+    rng = parse_month_range(label)
+    if not label or not rng:
+        result.update(success=False, message="Monthly period not found.")
+        return result
+    month_start, month_end = rng
+
+    directory = getDepartmentDirectory()
+    dept_key = norm_name(departmentKey)
+    members = (directory.get("byDepartment") or {}).get(dept_key) if directory else None
+    if not members:
+        result.update(success=False, message="Department not found: " + s(departmentKey))
+        return result
+    for d in directory["departments"]:
+        if norm_name(d["key"]) == dept_key:
+            result["departmentLabel"] = s(d.get("name") or d.get("key")).strip()
+    member_keys = {norm_name(n): n for n in members if norm_name(n)}
+
+    # 1) the month's score, exactly as the existing monthly data has it
+    rows = {}
+    summary = getMonthlyDepartmentWiseScoreSummary(label)
+    if summary and summary.get("success") is not False:
+        for dept in summary.get("departments") or []:
+            if norm_name(dept["key"]) != dept_key:
+                continue
+            for r in dept["rows"]:
+                rows[norm_name(r["name"])] = {
+                    "name": r["name"], "fmsScore": r["fmsScore"], "timeScore": r["timeScore"],
+                    "planned": r["planned"], "done": r["done"], "notDone": r["notDone"]}
+    else:
+        result["message"] = (summary or {}).get("message") or ""
+
+    # 2) the carry-forward backlog
+    bv = get_values("pending_backlog")
+    if bv is None:
+        result["backlogAvailable"] = False
+    else:
+        for rec in bv[1:]:
+            key = norm_name(rec[0] if rec else "")
+            if key not in member_keys:
+                continue
+            d = parse_backlog_date(rec[2] if len(rec) > 2 else "")
+            if d is None or d > month_end:
+                continue
+            row = rows.setdefault(key, {"name": member_keys[key], "fmsScore": "", "timeScore": "",
+                                        "planned": 0, "done": 0, "notDone": 0})
+            kind = "carry" if d < month_start else "current"
+            task = s(rec[1] if len(rec) > 1 else "").strip() or "Task"
+            detail = s(rec[4] if len(rec) > 4 else "").strip() or d.strftime("%d/%m/%Y")
+            row.setdefault("tasks", {}).setdefault(task, {"carry": [], "current": []})[kind].append(
+                {"date": d.strftime("%d/%m/%Y"), "detail": detail, "_d": d})
+            row[kind + "Count"] = row.get(kind + "Count", 0) + 1
+            if kind == "carry":
+                mk = d.strftime("%Y-%m")
+                row.setdefault("carryByMonth", {})
+                row["carryByMonth"][mk] = row["carryByMonth"].get(mk, 0) + 1
+
+    out = []
+    for key, row in rows.items():
+        tasks = []
+        for task, groups in (row.pop("tasks", {}) or {}).items():
+            for kind in ("carry", "current"):
+                groups[kind].sort(key=lambda x: x["_d"])
+                for x in groups[kind]:
+                    x.pop("_d", None)
+            tasks.append({"task": task, "carry": groups["carry"], "current": groups["current"]})
+        tasks.sort(key=lambda t: -(len(t["carry"]) + len(t["current"])))
+        row["tasks"] = tasks
+        row["carryCount"] = row.get("carryCount", 0)
+        row["currentCount"] = row.get("currentCount", 0)
+        row["pendingTotal"] = row["carryCount"] + row["currentCount"]
+        row["carryByMonth"] = row.get("carryByMonth", {})
+        out.append(row)
+    by_name(out)
+    result["rows"] = out
+    result["carryTotal"] = sum(r["carryCount"] for r in out)
+    result["currentTotal"] = sum(r["currentCount"] for r in out)
+    result["pendingTotal"] = result["carryTotal"] + result["currentTotal"]
+    result["averageFms"] = average_score_values([r["fmsScore"] for r in out])
+    result["averageTime"] = average_time_score_values([r["timeScore"] for r in out])
     return result

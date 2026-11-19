@@ -11,7 +11,7 @@ load_dotenv()
 _pool = None
 ALLOWED = {
     "users", "monthly_score", "checklist_ho", "checklist_site", "fms_data",
-    "monthly_fms_data", "post_sales_followup_score", "department",
+    "monthly_fms_data", "post_sales_followup_score", "department", "pending_backlog",
 }
 
 

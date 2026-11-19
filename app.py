@@ -25,7 +25,7 @@ EXPOSED = [
     "getMonthlyEmployeeData", "getWeeklyScoreSummary", "getHoDepartmentWiseWeeklyScoreSummary",
     "getMonthlyDepartmentWiseScoreSummary", "getDepartmentWiseWeeklyScoreSummary",
     "getMonthlyScoreData", "getMonthlyTeamScoreData", "generateMonthlyTeamScoreSheet",
-    "getFollowupScoreData",
+    "getFollowupScoreData", "getDepartmentMonthlyBacklog",
 ]
 FUNCS = {name: getattr(logic, name) for name in EXPOSED}
 
