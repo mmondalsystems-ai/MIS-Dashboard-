@@ -462,13 +462,43 @@ function PBL_publishTemp_(temp) {
 //   sheet_row = sheet row number, col_a .. col_f = columns A .. F
 // Row 1 (header) is stored as sheet_row 1. Rows that no longer exist
 // in the sheet are deleted, so the table always equals the sheet.
-// Uses SupabaseSync_getConfig() from the existing sync
-// (SUPABASE_URL + key in Script Properties). The key must be allowed
-// to write (service role), as for the other synced tabs.
+// Connection settings (Apps Script > Project Settings > Script Properties):
+//   SUPABASE_URL   = https://<project-ref>.supabase.co
+//   SUPABASE_KEY   = the service_role key (Supabase > Project Settings > API)
+// If the project already has SupabaseSync_getConfig(), that is used instead.
 // ============================================================
 
+function PBL_getSupabaseConfig_() {
+  if (typeof SupabaseSync_getConfig === "function") {
+    return SupabaseSync_getConfig();
+  }
+
+  const props = PropertiesService.getScriptProperties();
+
+  const baseUrl = String(props.getProperty("SUPABASE_URL") || "")
+    .trim()
+    .replace(/\/+$/, "");
+
+  const key = String(
+    props.getProperty("SUPABASE_KEY")
+    || props.getProperty("SUPABASE_SERVICE_ROLE_KEY")
+    || props.getProperty("SUPABASE_SERVICE_KEY")
+    || ""
+  ).trim();
+
+  if (!baseUrl || !key) {
+    throw new Error(
+      "Supabase settings missing. Add Script Properties SUPABASE_URL and "
+      + "SUPABASE_KEY (service_role key) in Project Settings."
+    );
+  }
+
+  return { baseUrl: baseUrl, key: key };
+}
+
+
 function PBL_pushToSupabase() {
-  const config = SupabaseSync_getConfig();
+  const config = PBL_getSupabaseConfig_();
   const sheet = PBL_getSheet_();
 
   const lastRow = Math.max(sheet.getLastRow(), 1);
