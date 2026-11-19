@@ -206,10 +206,21 @@ function PBL_showDialog() {
             let offset = 0, rows = 0, errors = [];
             function next(){
               if (offset >= names.length) {
-                status('Completed.\\n\\nEmployees: ' + names.length
+                const summary = 'Employees: ' + names.length
                   + '\\nPending rows written: ' + rows
-                  + (errors.length ? '\\n\\nErrors:\\n' + errors.join('\\n') : ''));
-                document.getElementById('run').disabled = false;
+                  + (errors.length ? '\\n\\nErrors:\\n' + errors.join('\\n') : '');
+                status('Sheet done. Sending to Supabase...');
+                google.script.run
+                  .withSuccessHandler(function(msg){
+                    status('Completed.\\n\\n' + summary + '\\n\\n' + msg);
+                    document.getElementById('run').disabled = false;
+                  })
+                  .withFailureHandler(function(e){
+                    status('Sheet done, but Supabase push failed:\\n' + e.message
+                      + '\\n\\n' + summary);
+                    document.getElementById('run').disabled = false;
+                  })
+                  .PBL_pushToSupabase();
                 return;
               }
               const batch = names.slice(offset, offset + batchSize);
@@ -433,4 +444,96 @@ function PBL_publishTemp_(temp) {
 
   SpreadsheetApp.flush();
   ss.deleteSheet(temp);
+
+  // Send the fresh data to Supabase (table pending_backlog).
+  try {
+    PBL_pushToSupabase();
+  } catch (error) {
+    console.error("Pending Backlog push to Supabase failed: " + error.message);
+  }
+}
+
+
+// ============================================================
+// PUSH THE "Pending Backlog" SHEET TO SUPABASE
+//
+// Writes the sheet into the table public.pending_backlog using the
+// same layout as the other synced tabs:
+//   sheet_row = sheet row number, col_a .. col_f = columns A .. F
+// Row 1 (header) is stored as sheet_row 1. Rows that no longer exist
+// in the sheet are deleted, so the table always equals the sheet.
+// Uses SupabaseSync_getConfig() from the existing sync
+// (SUPABASE_URL + key in Script Properties). The key must be allowed
+// to write (service role), as for the other synced tabs.
+// ============================================================
+
+function PBL_pushToSupabase() {
+  const config = SupabaseSync_getConfig();
+  const sheet = PBL_getSheet_();
+
+  const lastRow = Math.max(sheet.getLastRow(), 1);
+  const values = sheet
+    .getRange(1, 1, lastRow, PBL_HEADERS.length)
+    .getDisplayValues();
+
+  const records = values.map(function(row, i) {
+    return {
+      sheet_row: i + 1,
+      col_a: String(row[0] || ""),
+      col_b: String(row[1] || ""),
+      col_c: String(row[2] || ""),
+      col_d: String(row[3] || ""),
+      col_e: String(row[4] || ""),
+      col_f: String(row[5] || "")
+    };
+  });
+
+  const headers = {
+    apikey: config.key,
+    Authorization: "Bearer " + config.key
+  };
+
+  // 1) insert / update every sheet row (in chunks)
+  const CHUNK = 500;
+
+  for (let i = 0; i < records.length; i += CHUNK) {
+    const res = UrlFetchApp.fetch(
+      config.baseUrl + "/rest/v1/pending_backlog?on_conflict=sheet_row",
+      {
+        method: "post",
+        contentType: "application/json",
+        headers: Object.assign({
+          Prefer: "resolution=merge-duplicates,return=minimal"
+        }, headers),
+        payload: JSON.stringify(records.slice(i, i + CHUNK)),
+        muteHttpExceptions: true
+      }
+    );
+
+    if (res.getResponseCode() >= 300) {
+      throw new Error(
+        "Supabase insert failed (" + res.getResponseCode() + "): "
+        + res.getContentText().slice(0, 300)
+      );
+    }
+  }
+
+  // 2) remove rows that are no longer in the sheet
+  const del = UrlFetchApp.fetch(
+    config.baseUrl + "/rest/v1/pending_backlog?sheet_row=gt." + lastRow,
+    {
+      method: "delete",
+      headers: Object.assign({ Prefer: "return=minimal" }, headers),
+      muteHttpExceptions: true
+    }
+  );
+
+  if (del.getResponseCode() >= 300) {
+    throw new Error(
+      "Supabase cleanup failed (" + del.getResponseCode() + "): "
+      + del.getContentText().slice(0, 300)
+    );
+  }
+
+  return "Supabase updated: " + (lastRow - 1) + " pending row(s).";
 }
