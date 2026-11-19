@@ -20,11 +20,17 @@
 //
 // Setup
 // 1. Paste this file into the spreadsheet's Apps Script project.
-// 2. Run PBL_showDialog() once from the editor (or add the line
-//      .addItem("Build Pending Backlog", "PBL_showDialog")
-//    to your existing onOpen menu) and press "Start".
+// 2. AUTOMATIC: run PBL_installTrigger() once from the editor. The backlog
+//    is then rebuilt every day at about 6 AM (script time zone) with no
+//    clicks. Long runs continue themselves in 1-minute steps.
+//    MANUAL (any time): run PBL_showDialog() and press "Start"
+//    (or add .addItem("Build Pending Backlog", "PBL_showDialog") to onOpen).
 // 3. Make sure the "Pending Backlog" tab is synced to Supabase as the
 //    table pending_backlog (same sync as the other tabs).
+//
+// The automatic run builds the new data in a temporary sheet and replaces
+// "Pending Backlog" in one step at the end, so the dashboard never sees a
+// half-built list.
 // ============================================================
 
 const PBL_SHEET_NAME = "Pending Backlog";
@@ -91,21 +97,29 @@ function PBL_prepare() {
 }
 
 
-// Step 2: calculate one small batch of employees and append the rows.
+// Step 2 (manual dialog): calculate one small batch and append to the sheet.
 function PBL_processBatch(employeeNames) {
+  return PBL_processBatch_(employeeNames, PBL_getSheet_(), PBL_stamp_());
+}
+
+
+function PBL_stamp_() {
+  return Utilities.formatDate(
+    new Date(),
+    Session.getScriptTimeZone(),
+    "dd/MM/yyyy HH:mm"
+  );
+}
+
+
+function PBL_processBatch_(employeeNames, sheet, updatedOn) {
   MDB_resetExecutionCache_();
 
   const names = Array.isArray(employeeNames)
     ? employeeNames.slice(0, PBL_BATCH_SIZE)
     : [];
 
-  const sheet = PBL_getSheet_();
   const rangeEnd = PBL_endOfToday_();
-  const updatedOn = Utilities.formatDate(
-    new Date(),
-    Session.getScriptTimeZone(),
-    "dd/MM/yyyy HH:mm"
-  );
 
   const rows = [];
   const errors = [];
@@ -227,4 +241,196 @@ function PBL_showDialog() {
     HtmlService.createHtmlOutput(html).setWidth(380).setHeight(300),
     "Build Pending Backlog"
   );
+}
+
+
+// ============================================================
+// AUTOMATIC DAILY RUN
+// ============================================================
+
+const PBL_TEMP_SHEET_NAME = "Pending Backlog Build";
+const PBL_TIME_BUDGET_MS = 4.5 * 60 * 1000; // stay below the 6 minute limit
+const PBL_STATE_KEY = "PBL_STATE";
+
+
+// Run this ONCE: creates the daily trigger (about 6 AM script time).
+function PBL_installTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function(t) {
+    if (t.getHandlerFunction() === "PBL_autoRun") ScriptApp.deleteTrigger(t);
+  });
+
+  ScriptApp.newTrigger("PBL_autoRun")
+    .timeBased()
+    .everyDays(1)
+    .atHour(6)
+    .create();
+
+  MDB_alert("Pending Backlog will now rebuild automatically every day at about 6 AM.");
+}
+
+
+// Optional: stop the automatic run.
+function PBL_removeTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function(t) {
+    const name = t.getHandlerFunction();
+    if (name === "PBL_autoRun" || name === "PBL_autoContinue") {
+      ScriptApp.deleteTrigger(t);
+    }
+  });
+  PropertiesService.getScriptProperties().deleteProperty(PBL_STATE_KEY);
+}
+
+
+function PBL_autoContinue() {
+  PBL_autoRun();
+}
+
+
+function PBL_clearContinueTriggers_() {
+  ScriptApp.getProjectTriggers().forEach(function(t) {
+    if (t.getHandlerFunction() === "PBL_autoContinue") ScriptApp.deleteTrigger(t);
+  });
+}
+
+
+function PBL_scheduleContinue_(minutes) {
+  PBL_clearContinueTriggers_();
+  ScriptApp.newTrigger("PBL_autoContinue")
+    .timeBased()
+    .after(minutes * 60 * 1000)
+    .create();
+}
+
+
+function PBL_autoRun() {
+  const lock = LockService.getScriptLock();
+
+  if (!lock.tryLock(10000)) return; // another run is active
+
+  const props = PropertiesService.getScriptProperties();
+  const started = Date.now();
+
+  try {
+    PBL_clearContinueTriggers_();
+
+    let state = null;
+
+    try {
+      state = JSON.parse(props.getProperty(PBL_STATE_KEY) || "null");
+    } catch (e) {
+      state = null;
+    }
+
+    // Start fresh when there is no run, or the old one is stuck (> 3 h).
+    if (!state || (Date.now() - state.startedAt) > 3 * 60 * 60 * 1000) {
+
+      MDB_resetExecutionCache_();
+
+      const ss = SpreadsheetApp.getActiveSpreadsheet();
+      const old = ss.getSheetByName(PBL_TEMP_SHEET_NAME);
+      if (old) ss.deleteSheet(old);
+
+      const temp = ss.insertSheet(PBL_TEMP_SHEET_NAME);
+      temp.getRange(1, 1, 1, PBL_HEADERS.length).setValues([PBL_HEADERS]);
+      temp.getRange(2, 3, Math.max(temp.getMaxRows() - 1, 1), 2).setNumberFormat("@");
+      temp.hideSheet();
+
+      state = {
+        names: MDB_getEmployeeNames_(),
+        offset: 0,
+        startedAt: Date.now(),
+        updatedOn: PBL_stamp_(),
+        retries: 0
+      };
+
+      props.setProperty(PBL_STATE_KEY, JSON.stringify(state));
+    }
+
+    const temp = SpreadsheetApp.getActiveSpreadsheet()
+      .getSheetByName(PBL_TEMP_SHEET_NAME);
+
+    if (!temp) {
+      props.deleteProperty(PBL_STATE_KEY);
+      return;
+    }
+
+    while (
+      state.offset < state.names.length
+      && (Date.now() - started) < PBL_TIME_BUDGET_MS
+    ) {
+      const batch = state.names.slice(state.offset, state.offset + PBL_BATCH_SIZE);
+
+      const result = PBL_processBatch_(batch, temp, state.updatedOn);
+
+      if (result.errors && result.errors.length) {
+        console.warn("Pending Backlog: " + result.errors.join(" | "));
+      }
+
+      state.offset += batch.length;
+      props.setProperty(PBL_STATE_KEY, JSON.stringify(state));
+    }
+
+    if (state.offset < state.names.length) {
+      PBL_scheduleContinue_(1); // continue in a fresh execution
+      return;
+    }
+
+    PBL_publishTemp_(temp);
+    props.deleteProperty(PBL_STATE_KEY);
+
+  } catch (error) {
+    console.error("Pending Backlog auto run failed: " + error.message);
+
+    let state = null;
+    try {
+      state = JSON.parse(props.getProperty(PBL_STATE_KEY) || "null");
+    } catch (e) {}
+
+    // Retry a few times, then give up until the next daily run.
+    if (state && (state.retries || 0) < 3) {
+      state.retries = (state.retries || 0) + 1;
+      props.setProperty(PBL_STATE_KEY, JSON.stringify(state));
+      PBL_scheduleContinue_(5);
+    } else {
+      props.deleteProperty(PBL_STATE_KEY);
+    }
+
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+
+// Replace the live sheet with the finished temporary result in one step.
+function PBL_publishTemp_(temp) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const live = PBL_getSheet_();
+
+  const lastRow = temp.getLastRow();
+  const rows = lastRow > 1
+    ? temp.getRange(2, 1, lastRow - 1, PBL_HEADERS.length).getValues()
+    : [];
+
+  live.getRange(1, 1, 1, PBL_HEADERS.length)
+    .setValues([PBL_HEADERS])
+    .setFontWeight("bold")
+    .setBackground("#1a3f6f")
+    .setFontColor("#ffffff");
+  live.setFrozenRows(1);
+
+  const liveLast = live.getLastRow();
+  if (liveLast > 1) {
+    live.getRange(2, 1, liveLast - 1, PBL_HEADERS.length).clearContent();
+  }
+
+  if (rows.length > 0) {
+    if (live.getMaxRows() < rows.length + 1) {
+      live.insertRowsAfter(live.getMaxRows(), rows.length + 1 - live.getMaxRows());
+    }
+    live.getRange(2, 3, rows.length, 2).setNumberFormat("@");
+    live.getRange(2, 1, rows.length, PBL_HEADERS.length).setValues(rows);
+  }
+
+  SpreadsheetApp.flush();
+  ss.deleteSheet(temp);
 }
